@@ -20,6 +20,9 @@
 #include "libmesh/fe.h"
 #include "libmesh/elem.h"
 #include "libmesh/enum_to_string.h"
+#include "libmesh/dense_submatrix.h"
+#include "libmesh/quadrature_gauss.h"
+#include "libmesh/fe_lagrange_shape_1D.h"
 
 // An excellent discussion of Nedelec shape functions is given in
 // https://www.dealii.org/reports/nedelec/nedelec.pdf
@@ -167,6 +170,119 @@ RealGradient fe_hcurl_shape_second_deriv(const Elem * elem,
         default:
           libmesh_error_msg("Invalid j = " << j);
         }
+    default:
+      libmesh_error_msg("ERROR: Unsupported 2D element type!: " << Utility::enum_to_string(elem->type()));
+    }
+}
+
+
+
+RealGradient get_poly_coefficients(const Elem * elem,
+                                   const Order order,
+                                   const unsigned int i)
+{
+  const unsigned n_dofs = FE<2, NEDELEC_ONE>::n_dofs(elem->type(), order);
+  const unsigned n_face_dofs = FE<2, NEDELEC_ONE>::n_dofs_per_elem(elem->type(), order);
+  const unsigned n_edge_dofs = n_dofs - n_face_dofs;
+  const unsigned n_mono_dofs = FE<2, HIERARCHIC_VEC>::n_dofs(elem, order - 1);
+  const unsigned n_curl_dofs = n_dofs - n_mono_dofs;
+
+  DenseMatrix<Real> A(n_dofs, n_dofs);
+  DenseSubMatrix<Real> Aem(A, 0,           0,           n_edge_dofs, n_mono_dofs);
+  DenseSubMatrix<Real> Aec(A, 0,           n_mono_dofs, n_edge_dofs, n_curl_dofs);
+  DenseSubMatrix<Real> Afm(A, n_edge_dofs, 0,           n_face_dofs, n_mono_dofs);
+  DenseSubMatrix<Real> Afc(A, n_edge_dofs, n_mono_dofs, n_face_dofs, n_curl_dofs);
+
+  switch (elem->type())
+    {
+    case QUAD8:
+    case QUAD9:
+      return RealGradient( 0. );
+    case TRI6:
+    case TRI7:
+      {
+        QGauss edge_qrule(1, Order(2 * order - 1));
+        QGauss face_qrule(2, Order(2 * order - 2));
+        edge_qrule.init(EDGE2, 0, true);
+        face_qrule.init(elem->type(), 0, true);
+
+        auto tangent = [&](const unsigned edge) -> Point
+        {
+          return elem->master_point(elem->local_edge_node(edge, 1)) -
+                 elem->master_point(elem->local_edge_node(edge, 0));
+        };
+
+        auto parameterization = [&](const unsigned edge, const Real s) -> Point
+        {
+          return elem->master_point(elem->local_edge_node(edge, 0)) * (1 - s) +
+                 elem->master_point(elem->local_edge_node(edge, 1)) * s;
+        };
+
+        // Edge moments
+        for (unsigned int qp = 0; qp < edge_qrule.n_points(); qp++)
+        {
+          const Real w = edge_qrule.w(qp) / 2.;
+          const Real s = (edge_qrule.qp(qp)(0) + 1.) / 2.;
+
+          for (unsigned moment = 0; moment < n_edge_dofs; moment++)
+          {
+            const unsigned edge = moment / order;
+            const unsigned edge_moment = moment % order;
+            const Point p = parameterization(edge, s);
+            const RealGradient t = tangent(edge);
+            const RealGradient c = t * w * fe_lagrange_1D_arbitrary_shape(order - 1, edge_moment, 2 * s - 1);
+
+            for (unsigned dof = 0; dof < n_mono_dofs; dof++)
+              Aem(moment, dof) += c * FE<2, HIERARCHIC_VEC>::shape(elem, order - 1, dof, p);
+            for (unsigned dof = 0; dof < n_curl_dofs; dof++)
+              Aec(moment, dof) += c * fe_hcurl_shape(elem, order, dof, p);
+          }
+        }
+
+        // Face moments
+        for (unsigned int qp = 0; qp < face_qrule.n_points(); qp++)
+        {
+          const Real w = face_qrule.w(qp);
+          const Point p = face_qrule.qp(qp);
+
+          for (unsigned moment = 0; moment < n_face_dofs; moment++)
+          {
+            const RealGradient c = w * FE<2, MONOMIAL_VEC>::shape(elem, order - 2, moment, p);
+
+            for (unsigned dof = 0; dof < n_mono_dofs; dof++)
+              Afm(moment, dof) += c * FE<2, HIERARCHIC_VEC>::shape(elem, order - 1, dof, p);
+            for (unsigned dof = 0; dof < n_curl_dofs; dof++)
+              Afc(moment, dof) += c * fe_hcurl_shape(elem, order, dof, p);
+          }
+        }
+
+        for (size_t i = 0; i < n_dofs; i++)
+        {
+          for (size_t j = 0; j < n_dofs; j++)
+            std::cout << A(i, j) << "\t";
+          std::cout << std::endl;
+        }
+
+        DenseMatrix<Real> C(n_dofs, n_dofs);
+        DenseVector<Real> x(n_dofs), b(n_dofs);
+        for (size_t i = 0; i < n_dofs; i++)
+        {
+          b.zero();
+          b(i) = 1;
+          A.lu_solve(b, x);
+          std::copy(x.get_values().begin(), x.get_values().end(), C.get_values().begin() + i * n_dofs);
+        }
+
+        for (size_t i = 0; i < n_dofs; i++)
+        {
+          for (size_t j = 0; j < n_dofs; j++)
+            std::cout << C(i, j) << "\t";
+          std::cout << std::endl;
+        }
+
+      }
+
+      return RealGradient( 0. );
     default:
       libmesh_error_msg("ERROR: Unsupported 2D element type!: " << Utility::enum_to_string(elem->type()));
     }
