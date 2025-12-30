@@ -21,13 +21,159 @@
 #include "libmesh/elem.h"
 #include "libmesh/enum_to_string.h"
 
-namespace libMesh
-{
-
 // An excellent discussion of Nedelec shape functions is given in
 // https://www.dealii.org/reports/nedelec/nedelec.pdf
 // An excellent summary of Nedelec shape functions is also given in
 // https://defelement.com/elements/nedelec1.html
+
+namespace libMesh
+{
+
+inline
+Real powi(Real base, int exp)
+{
+  Real val = 1.;
+  for (; exp--; val *= base);
+  return val;
+}
+
+
+
+inline
+RealGradient fe_hcurl_shape(const Elem * elem,
+                            const Order order,
+                            const unsigned int i,
+                            const Point & p)
+{
+  const Real x = p(0);
+  const Real y = p(1);
+
+  switch (elem->type())
+    {
+    case QUAD8:
+    case QUAD9:
+      libmesh_assert_less(i, 2 * order);
+      return RealGradient( (i < order) * powi(x, i % order) * powi(y, order),
+                           (i >= order) * powi(x, order) * powi(y, i % order) );
+    case TRI6:
+    case TRI7:
+      libmesh_assert_less(i, order);
+      return RealGradient( powi(x, order - i - 1) * powi(y, i + 1),
+                           - powi(x, order - i) * powi(y, i) );
+    default:
+      libmesh_error_msg("ERROR: Unsupported 2D element type!: " << Utility::enum_to_string(elem->type()));
+    }
+}
+
+
+
+inline
+RealGradient fe_hcurl_shape_deriv(const Elem * elem,
+                                  const Order order,
+                                  const unsigned int i,
+                                  const unsigned int j,
+                                  const Point & p)
+{
+  libmesh_assert_less (j, 2);
+
+  const Real x = p(0);
+  const Real y = p(1);
+
+  switch (elem->type())
+    {
+    case QUAD8:
+    case QUAD9:
+      libmesh_assert_less(i, 2 * order);
+      switch (j)
+        {
+        case 0:
+          return RealGradient( (i < order) * (i % order) * powi(x, i % order - 1) * powi(y, order),
+                               (i >= order) * order * powi(x, order - 1) * powi(y, i % order) );
+        case 1:
+          return RealGradient( (i < order) * order * powi(x, i % order) * powi(y, order - 1),
+                               (i >= order) * (i % order) * powi(x, order) * powi(y, i % order - 1) );
+        default:
+          libmesh_error_msg("Invalid j = " << j);
+        }
+    case TRI6:
+    case TRI7:
+      libmesh_assert_less(i, order);
+      switch (j)
+        {
+        case 0:
+          return RealGradient( (order - i - 1) * powi(x, order - i - 2) * powi(y, i + 1),
+                               - (order - i) * powi(x, order - i - 1) * powi(y, i) );
+        case 1:
+          return RealGradient( (i + 1) * powi(x, order - i - 1) * powi(y, i),
+                               - i * powi(x, order - i) * powi(y, i - 1) );
+        default:
+          libmesh_error_msg("Invalid j = " << j);
+        }
+    default:
+      libmesh_error_msg("ERROR: Unsupported 2D element type!: " << Utility::enum_to_string(elem->type()));
+    }
+}
+
+
+
+inline
+RealGradient fe_hcurl_shape_second_deriv(const Elem * elem,
+                                         const Order order,
+                                         const unsigned int i,
+                                         const unsigned int j,
+                                         const Point & p)
+{
+  // j = 0 ==> d^2 phi / dxi^2
+  // j = 1 ==> d^2 phi / dxi deta
+  // j = 2 ==> d^2 phi / deta^2
+  libmesh_assert_less (j, 3);
+
+  const Real x = p(0);
+  const Real y = p(1);
+
+  switch (elem->type())
+    {
+    case QUAD8:
+    case QUAD9:
+      libmesh_assert_less(i, 2 * order);
+      switch (j)
+        {
+        case 0:
+          return RealGradient( (i < order) * (i % order) * (i % order - 1) * powi(x, i % order - 2) * powi(y, order),
+                               (i >= order) * order * (order - 1) * powi(x, order - 2) * powi(y, i % order) );
+        case 1:
+          return RealGradient( (i < order) * (i % order) * order * powi(x, i % order - 1) * powi(y, order - 1),
+                               (i >= order) * order * (i % order) * powi(x, order - 1) * powi(y, i % order - 1) );
+        case 2:
+          return RealGradient( (i < order) * order * (order - 1) * powi(x, i % order) * powi(y, order - 2),
+                               (i >= order) * (i % order) * (i % order - 1) * powi(x, order) * powi(y, i % order - 2) );
+        default:
+          libmesh_error_msg("Invalid j = " << j);
+        }
+    case TRI6:
+    case TRI7:
+      libmesh_assert_less(i, order);
+      switch (j)
+        {
+        case 0:
+          return RealGradient( (order - i - 1) * (order - i - 2) * powi(x, order - i - 3) * powi(y, i + 1),
+                               - (order - i) * (order - i - 1) * powi(x, order - i - 2) * powi(y, i) );
+        case 1:
+          return RealGradient( (order - i - 1) * (i + 1) * powi(x, order - i - 2) * powi(y, i),
+                               - (order - i) * i * powi(x, order - i - 1) * powi(y, i - 1) );
+        case 2:
+          return RealGradient( (i + 1) * i * powi(x, order - i - 1) * powi(y, i - 1),
+                               - i * (i - 1) * powi(x, order - i) * powi(y, i - 2) );
+        default:
+          libmesh_error_msg("Invalid j = " << j);
+        }
+    default:
+      libmesh_error_msg("ERROR: Unsupported 2D element type!: " << Utility::enum_to_string(elem->type()));
+    }
+}
+
+
+
 template <>
 RealGradient FE<2,NEDELEC_ONE>::shape(const Elem * elem,
                                       const Order order,
